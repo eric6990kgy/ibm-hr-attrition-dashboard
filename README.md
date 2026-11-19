@@ -17,6 +17,10 @@
 | `outputs/figs/` | 所有圖表 |
 | `outputs/employee_risk_reasons.csv` | 每位員工的風險分數與前 3 大原因 |
 | `outputs/dashboard/` | 儀表板用的 JSON 資料 |
+| `docs/員工離職預測專案企劃書.pdf`、`.docx` | 兩頁 A4 企劃書（PDF 與 Word） |
+| `PROPOSAL.md`、`EDA_Report.md` | 企劃書與分析報告的網頁版原稿 |
+| `tools/make_proposal_docs.py` | 由 `PROPOSAL.md` 重新產生 PDF 與 Word |
+| `tools/dashboard_source/` | 儀表板原始碼：claude.ai 版頁面＋獨立版外殼，`build_standalone.py` 重新產生 `index.html` |
 | `_config.yml` | GitHub Pages 設定（讓 .md 報告轉成網頁） |
 
 ## 放上 GitHub Pages（手動上傳）
@@ -46,6 +50,14 @@ python -m venv .venv
 ```
 
 三支腳本要依序執行，因為 03 會讀取 02 產出的 `outputs/model_results.json`。重跑後 `outputs/dashboard/` 會更新，儀表板也會自動顯示新的結果。
+
+修改企劃書或儀表板後重新產生檔案：
+
+```powershell
+.\.venv\Scripts\python -m pip install markdown python-docx
+.\.venv\Scripts\python tools/make_proposal_docs.py
+.\.venv\Scripts\python tools/dashboard_source/build_standalone.py
+```
 
 ## 資料來源
 [IBM HR Analytics Employee Attrition & Performance](https://www.kaggle.com/datasets/pavansubhasht/ibm-hr-analytics-attrition-dataset)（Kaggle，pavansubhasht）。這是 IBM 做的虛構資料，只適合學習和做概念驗證。
