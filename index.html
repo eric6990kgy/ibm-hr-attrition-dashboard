@@ -1,0 +1,818 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>IBM 員工離職風險儀表板</title>
+<meta name="description" content="以 IBM HR Analytics 資料集建立的員工離職預測：EDA、Logistic 模型、SHAP 個人解釋、What-if 模擬與 ROI 試算。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;600&family=Noto+Serif+TC:wght@400;600&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<style>
+/* Layout: 單欄、最寬 1120px 的分析頁；token 對應原儀表板平台的變數名稱 */
+:root {
+  --color-bg: #f7f8fa; --color-panel: #ffffff; --color-fg: #1c2330; --color-fg-muted: #5b6577;
+  --color-border-line: #dde2ea; --color-ok: #1f7a4d; --color-warn: #b26b00; --color-bad: #c2362b;
+  --chart-1: #2f6db5; --chart-2: #7a5cc2;
+  --font-anthropic-sans: "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+  --font-anthropic-serif: "Noto Serif TC", "PMingLiU", Georgia, serif;
+  --cds-font-size-caption: 0.8125rem; --cds-font-size-body: 0.9375rem; --cds-font-size-heading: 1.125rem; --cds-font-size-title: 1.875rem;
+  --cds-font-weight-medium: 600;
+  --cds-gap-xs: 4px; --cds-gap-sm: 8px; --cds-gap-md: 12px; --cds-gap-lg: 20px; --cds-gap-xl: 40px;
+  --cds-pad-lg: 18px; --cds-radius: 10px;
+  --cds-chart-axis: #a3acba; --cds-chart-grid: #e6e9ef; --cds-chart-reference: #7b8494;
+  --cds-text-secondary: #5b6577; --cds-surface-popover: #ffffff; --cds-border: #d3d9e2; --cds-shadow-popover: 0 6px 20px rgba(20, 30, 50, .14);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #12161d; --color-panel: #1a2029; --color-fg: #e6e9ee; --color-fg-muted: #9aa4b2;
+    --color-border-line: #2c3440; --color-ok: #4cc38a; --color-warn: #e0a640; --color-bad: #f0715f;
+    --chart-1: #6aa3e8; --chart-2: #a78bfa;
+    --cds-chart-axis: #5d6878; --cds-chart-grid: #262d38; --cds-chart-reference: #8a94a4;
+    --cds-text-secondary: #9aa4b2; --cds-surface-popover: #222935; --cds-border: #364050; --cds-shadow-popover: 0 6px 20px rgba(0, 0, 0, .5);
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--color-bg); color: var(--color-fg); font-family: var(--font-anthropic-sans); font-size: var(--cds-font-size-body); line-height: 1.5; }
+.site-nav { position: sticky; top: 0; z-index: 5; background: var(--color-bg); border-bottom: 1px solid var(--color-border-line); }
+.site-nav-inner { max-width: 1120px; margin: 0 auto; padding: 10px max(16px, env(safe-area-inset-right, 0px)) 10px max(16px, env(safe-area-inset-left, 0px)); display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; font-size: var(--cds-font-size-caption); }
+.site-nav b { font-weight: 600; margin-right: auto; }
+.site-nav a { color: var(--color-fg-muted); text-decoration: none; }
+.site-nav a:hover, .site-nav a:focus-visible { color: var(--color-fg); text-decoration: underline; }
+#dash-root { max-width: 1120px; margin: 0 auto; padding: 28px max(16px, env(safe-area-inset-right, 0px)) 56px max(16px, env(safe-area-inset-left, 0px)); }
+.dash-select { font: inherit; font-size: var(--cds-font-size-body); color: var(--color-fg); background-color: var(--color-panel); border: 1px solid var(--color-border-line); border-radius: var(--cds-radius); padding: 6px 30px 6px 10px; appearance: none; -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%237b8494' stroke-width='1.5'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; }
+.dash-select:focus-visible { outline: 2px solid var(--color-fg); outline-offset: 2px; }
+.site-foot { color: var(--color-fg-muted); font-size: var(--cds-font-size-caption); margin-top: 32px; }
+.site-error { color: var(--color-bad); }
+</style>
+<script>
+/* 簡易執行環境：在 GitHub Pages 上取代原儀表板平台的 dash API（載入資料、計算、重繪、篩選參數） */
+(function () {
+  const SOURCES = {
+    hr: { url: 'data/WA_Fn-UseC_-HR-Employee-Attrition.csv', type: 'csv' },
+    risk: { url: 'outputs/dashboard/risk.json' },
+    model: { url: 'outputs/dashboard/model.json' },
+    metrics: { url: 'outputs/dashboard/metrics.json' },
+    roc: { url: 'outputs/dashboard/roc.json' },
+  };
+  const store = {}, calcs = [], calcVals = {}, draws = {}, onDatas = [];
+  let params = {}, ready = false, failed = false;
+  const parseCsv = (t) => {
+    const lines = t.replace(/^﻿/, '').trim().split(/\r?\n/);
+    const head = lines[0].split(',');
+    return lines.slice(1).map((l) => { const v = l.split(','); const o = {}; head.forEach((k, i) => { o[k] = v[i]; }); return o; });
+  };
+  const recompute = () => {
+    for (const c of calcs) {
+      try { calcVals[c.id] = c.fn(...c.inputs.map((i) => (i in calcVals ? calcVals[i] : (store[i] ? store[i].rows : [])))); }
+      catch (e) { console.error('calc', c.id, e); calcVals[c.id] = null; }
+    }
+  };
+  const run = (name) => {
+    const fn = draws[name]; if (!fn) return;
+    document.querySelectorAll('[data-draw="' + name + '"]').forEach((el) => { try { fn(el); } catch (e) { console.error('draw', name, e); } });
+  };
+  const runAll = () => { onDatas.forEach((f) => { try { f(); } catch (e) { console.error(e); } }); Object.keys(draws).forEach(run); };
+  window.dash = {
+    colors: ['var(--chart-1)', 'var(--chart-2)'],
+    data(id) {
+      if (id in calcVals) return { status: failed ? 'error' : (ready ? 'ok' : 'loading'), data: ready ? calcVals[id] : null };
+      const s = store[id];
+      if (!s) return { status: failed ? 'error' : 'loading', data: [] };
+      return { status: 'ok', data: s.rows, meta: s.meta || [], columns: s.rows.length ? Object.keys(s.rows[0]) : [] };
+    },
+    calc(id, spec) { calcs.push({ id, inputs: spec.inputs, fn: spec.fn }); calcVals[id] = null; },
+    loader() {},
+    draw(name, fn) { if (typeof fn === 'function') { draws[name] = fn; if (ready) run(name); } else run(name); },
+    onData(fn) { onDatas.push(fn); try { fn(); } catch (e) { console.error(e); } },
+    params() { return Object.assign({}, params); },
+    setParams(p) { for (const k of Object.keys(p)) { if (p[k] == null) delete params[k]; else params[k] = p[k]; } if (ready) { recompute(); runAll(); } },
+    resetParams() { params = {}; if (ready) { recompute(); runAll(); } },
+    refresh() {}, setLink() {},
+  };
+  window.dashBoot = async function () {
+    try {
+      await Promise.all(Object.entries(SOURCES).map(async ([id, s]) => {
+        const r = await fetch(s.url);
+        if (!r.ok) throw new Error(s.url + ' ' + r.status);
+        if (s.type === 'csv') store[id] = { rows: parseCsv(await r.text()) };
+        else { const j = await r.json(); store[id] = { rows: j.rows, meta: j.meta }; }
+      }));
+      ready = true; recompute(); runAll();
+      let t; window.addEventListener('resize', () => { clearTimeout(t); t = setTimeout(runAll, 150); });
+    } catch (e) {
+      failed = true; console.error(e);
+      document.querySelectorAll('#load-error').forEach((p) => { p.hidden = false; });
+      runAll();
+    }
+  };
+})();
+</script>
+</head>
+<body>
+<nav class="site-nav" aria-label="網站導覽"><div class="site-nav-inner">
+  <b>員工離職預測專案</b>
+  <a href="./">互動儀表板</a>
+  <a href="EDA_Report.html">分析報告</a>
+  <a href="PROPOSAL.html">專案企劃書</a>
+  <a href="https://github.com/" id="repo-link">GitHub 原始碼</a>
+</div></nav>
+<script>(function(){var h=location.hostname,m=h.match(/^([^.]+)\.github\.io$/),seg=location.pathname.split("/").filter(Boolean)[0];if(m){var a=document.getElementById("repo-link");a.href="https://github.com/"+m[1]+(seg&&!/\.html?$/.test(seg)?"/"+seg:"");}})();</script>
+<main id="dash-root">
+<p id="load-error" class="site-error" hidden>資料載入失敗。如果你是直接用瀏覽器打開本機的 index.html，請改用本機伺服器（例如 python -m http.server）或 GitHub Pages 網址開啟。</p>
+<style>
+.hr { display: flex; flex-direction: column; gap: var(--cds-gap-xl); font-variant-numeric: tabular-nums; }
+.hr h1.hr-title { font-family: var(--font-anthropic-serif); font-weight: 400; font-size: var(--cds-font-size-title); margin: 0; text-wrap: balance; }
+.hr h2 { font-size: var(--cds-font-size-heading); font-weight: var(--cds-font-weight-medium); margin: 0; text-wrap: balance; }
+.hr-lead { font-size: var(--cds-font-size-body); margin: var(--cds-gap-sm) 0 0; max-width: 68ch; line-height: 1.6; }
+.hr-note, .hr-sub { color: var(--color-fg-muted); font-size: var(--cds-font-size-caption); margin: var(--cds-gap-xs) 0 0; max-width: 72ch; line-height: 1.5; }
+.hr-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--cds-gap-md); }
+.hr-tile, .hr-card { background: var(--color-panel); border: 1px solid var(--color-border-line); border-radius: var(--cds-radius); padding: var(--cds-pad-lg); min-width: 0; }
+.hr-tile-label { color: var(--color-fg-muted); font-size: var(--cds-font-size-caption); }
+.hr-tile-value { font-family: var(--font-anthropic-serif); font-weight: 400; font-size: 2rem; line-height: 1.2; margin-top: var(--cds-gap-xs); }
+.hr-tile-foot { color: var(--color-fg-muted); font-size: var(--cds-font-size-caption); margin-top: var(--cds-gap-xs); }
+.hr-section { display: flex; flex-direction: column; gap: var(--cds-gap-md); }
+.hr-row { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: var(--cds-gap-lg); align-items: start; }
+@media (max-width: 760px) { .hr-row { grid-template-columns: minmax(0, 1fr); } }
+.hr-controls { display: flex; flex-wrap: wrap; gap: var(--cds-gap-md); align-items: end; }
+.hr-field { display: flex; flex-direction: column; gap: var(--cds-gap-xs); font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); min-width: 0; }
+.hr-field input { font: inherit; color: var(--color-fg); background: var(--color-bg); border: 1px solid var(--color-border-line); border-radius: var(--cds-radius); padding: 6px 8px; width: 120px; font-size: var(--cds-font-size-body); }
+.hr-field input:focus-visible, .hr-btn:focus-visible, .hr-pick:focus-visible { outline: 2px solid var(--color-fg); outline-offset: 2px; }
+.hr-chart { position: relative; min-height: 220px; width: 100%; }
+.hr-chart-sm { position: relative; min-height: 120px; width: 100%; }
+.hr-chart svg text { fill: var(--cds-text-secondary); font-size: var(--cds-font-size-caption); }
+.hr-chart-sm svg text { fill: var(--cds-text-secondary); font-size: var(--cds-font-size-caption); }
+.hr-chart svg .hr-strong, .hr-chart-sm svg .hr-strong { fill: var(--color-fg); }
+.hr-tip { position: absolute; pointer-events: none; background: var(--cds-surface-popover); border: 1px solid var(--cds-border); box-shadow: var(--cds-shadow-popover); border-radius: var(--cds-radius); padding: 6px 10px; font-size: var(--cds-font-size-caption); color: var(--color-fg); white-space: nowrap; z-index: 2; }
+.hr-tablewrap { overflow-x: auto; }
+.hr table { border-collapse: collapse; width: 100%; font-size: var(--cds-font-size-caption); }
+.hr th { text-align: left; color: var(--color-fg-muted); font-weight: var(--cds-font-weight-medium); padding: 6px 8px; border-bottom: 1px solid var(--color-border-line); white-space: nowrap; }
+.hr td { padding: 6px 8px; border-bottom: 1px solid var(--color-border-line); vertical-align: top; }
+.hr td.hr-num, .hr th.hr-num { text-align: right; }
+.hr tbody tr.hr-click { cursor: pointer; }
+.hr tbody tr.hr-click:hover { background: var(--color-panel); }
+.hr tbody tr.hr-sel { background: var(--color-panel); box-shadow: inset 3px 0 0 var(--color-fg); }
+.hr-chip { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: var(--cds-font-size-caption); border: 1px solid currentColor; white-space: nowrap; }
+.hr-chip-高風險 { color: var(--color-bad); }
+.hr-chip-中風險 { color: var(--color-warn); }
+.hr-chip-低風險 { color: var(--color-ok); }
+.hr-picks { display: flex; flex-wrap: wrap; gap: var(--cds-gap-xs); }
+.hr-pick, .hr-btn { font: inherit; font-size: var(--cds-font-size-caption); color: var(--color-fg); background: var(--color-bg); border: 1px solid var(--color-border-line); border-radius: 999px; padding: 3px 10px; cursor: pointer; }
+.hr-pick[aria-pressed="true"] { border-color: var(--color-fg); font-weight: var(--cds-font-weight-medium); }
+.hr-btn { border-radius: var(--cds-radius); padding: 6px 12px; }
+.hr-profile { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: var(--cds-gap-sm) var(--cds-gap-md); }
+.hr-kv-label { color: var(--color-fg-muted); font-size: var(--cds-font-size-caption); }
+.hr-kv-value { font-size: var(--cds-font-size-body); margin-top: 2px; overflow-wrap: anywhere; }
+.hr-whatif { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--cds-gap-md); }
+.hr-whatif .dash-select, .hr-whatif input { width: 100%; box-sizing: border-box; }
+.hr-result { display: flex; flex-wrap: wrap; gap: var(--cds-gap-lg); align-items: baseline; }
+.hr-big { font-family: var(--font-anthropic-serif); font-weight: 400; font-size: 2rem; line-height: 1.2; }
+.hr-good { color: var(--color-ok); }
+.hr-bad { color: var(--color-bad); }
+.hr-reasons { margin: 0; padding-left: 1.2em; line-height: 1.7; }
+.hr details summary { cursor: pointer; color: var(--color-fg-muted); }
+.hr details ul { line-height: 1.7; max-width: 76ch; }
+@media print { .hr-section { break-before: page; } }
+</style>
+
+<div class="hr">
+  <header id="top">
+    <h1 class="hr-title">IBM 員工離職風險儀表板</h1>
+    <p class="hr-lead" data-read lang="zh-TW">加班員工的離職率是 <b data-draw="kpi" data-fmt="pct" data-source="kpi" data-field="ot_yes_rate" data-row="0">—</b>，沒有加班的只有 <b data-draw="kpi" data-fmt="pct" data-source="kpi" data-field="ot_no_rate" data-row="0">—</b>。模型列出 <b data-draw="kpi" data-fmt="int" data-source="kpi" data-field="high_n" data-row="0">—</b> 位高風險員工，涵蓋了 <b data-draw="kpi" data-fmt="pct0" data-source="kpi" data-field="capture" data-row="0">—</b> 的實際離職者。</p>
+    <p class="hr-note">資料來源：Kaggle 上的 IBM HR Analytics Employee Attrition &amp; Performance。這是 IBM 做的虛構資料，單一時間點，金額沒有標示幣別。模型為 Logistic 迴歸，已移除性別、年齡、婚姻這三個敏感特徵。</p>
+  </header>
+
+  <section class="hr-tiles" id="kpis" aria-label="重點數字">
+    <div class="hr-tile" id="tile-headcount"><div class="hr-tile-label">員工數</div><div class="hr-tile-value" data-draw="kpi" data-fmt="int" data-source="kpi" data-field="n" data-row="0">—</div><div class="hr-tile-foot">資料中的全部員工</div></div>
+    <div class="hr-tile" id="tile-rate"><div class="hr-tile-label">離職率</div><div class="hr-tile-value" data-draw="kpi" data-fmt="pct" data-source="kpi" data-field="rate" data-row="0">—</div><div class="hr-tile-foot">離職 <span data-draw="kpi" data-fmt="int" data-source="kpi" data-field="leavers" data-row="0">—</span> 人</div></div>
+    <div class="hr-tile" id="tile-high"><div class="hr-tile-label">高風險員工</div><div class="hr-tile-value" data-draw="kpi" data-fmt="int" data-source="kpi" data-field="high_n" data-row="0">—</div><div class="hr-tile-foot">風險分數 ≥ 50%，其中實際離職 <span data-draw="kpi" data-fmt="pct" data-source="kpi" data-field="high_rate" data-row="0">—</span></div></div>
+    <div class="hr-tile" id="tile-capture"><div class="hr-tile-label">高風險名單涵蓋的離職者</div><div class="hr-tile-value" data-draw="kpi" data-fmt="pct0" data-source="kpi" data-field="capture" data-row="0">—</div><div class="hr-tile-foot"><span data-draw="kpi" data-fmt="int" data-source="kpi" data-field="high_leavers" data-row="0">—</span> 位離職者在名單上</div></div>
+    <div class="hr-tile" id="tile-auc"><div class="hr-tile-label">模型 ROC-AUC</div><div class="hr-tile-value" data-draw="kpi" data-fmt="f3" data-source="kpi" data-field="auc" data-row="0">—</div><div class="hr-tile-foot">5-fold 交叉驗證；0.5 等於亂猜</div></div>
+  </section>
+
+  <section class="hr-section" id="hotspots">
+    <div>
+      <h2>哪些族群最容易離職</h2>
+      <p class="hr-sub">選一個維度，看每個族群的離職率。虛線是全公司平均。</p>
+    </div>
+    <div class="hr-controls">
+      <label class="hr-field" for="hr-dim">維度
+        <select class="dash-select" id="hr-dim">
+          <option value="OverTime">加班</option>
+          <option value="JobRole">職務</option>
+          <option value="JobLevel">職級</option>
+          <option value="StockOptionLevel">認股等級</option>
+          <option value="BusinessTravel">出差頻率</option>
+          <option value="Department">部門</option>
+          <option value="Tenure">本公司年資</option>
+          <option value="AgeBand">年齡</option>
+          <option value="IncomeQ">月薪四分位</option>
+          <option value="EnvironmentSatisfaction">環境滿意度（1–4）</option>
+          <option value="JobSatisfaction">工作滿意度（1–4）</option>
+          <option value="WorkLifeBalance">工作生活平衡（1–4）</option>
+          <option value="JobInvolvement">工作投入度（1–4）</option>
+          <option value="MaritalStatus">婚姻狀態</option>
+        </select>
+      </label>
+    </div>
+    <div class="hr-row">
+      <div class="hr-card">
+        <div class="hr-chart" id="rates-chart" data-draw="rates" data-source="rates"></div>
+      </div>
+      <div class="hr-card" id="ot-level">
+        <h2>加班 × 職級的離職率</h2>
+        <p class="hr-sub">Level 1 的員工一旦加班，離職率最高。</p>
+        <div class="hr-chart-sm" data-draw="otlevel" data-source="ot_level"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="hr-section" id="model">
+    <div>
+      <h2>模型準不準</h2>
+      <p class="hr-sub">類別不平衡（只有 16% 離職），所以看 ROC-AUC、PR-AUC 和 Recall，不看 Accuracy。「前 20% 涵蓋率」是指風險最高的 20% 員工裡，包含了多少比例的實際離職者。</p>
+    </div>
+    <div class="hr-row">
+      <div class="hr-card hr-tablewrap">
+        <table data-source="metrics" data-row-key="model" id="metrics-table">
+          <thead><tr><th data-field="model">模型</th><th class="hr-num" data-field="roc_auc">ROC-AUC</th><th class="hr-num" data-field="pr_auc">PR-AUC</th><th class="hr-num" data-field="recall">Recall</th><th class="hr-num" data-field="precision">Precision</th><th class="hr-num" data-field="top20_capture">前 20% 涵蓋率</th></tr></thead>
+          <tbody data-draw="metrics"></tbody>
+        </table>
+      </div>
+      <div class="hr-card" id="roc">
+        <h2>ROC 曲線（儀表板使用的模型）</h2>
+        <div class="hr-chart-sm" data-draw="roc" data-source="roc"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="hr-section" id="reasons">
+    <div>
+      <h2>高風險員工的第一個可介入原因</h2>
+      <p class="hr-sub">每位高風險員工 SHAP 值最大、而且 HR 能介入的原因。依原因分流，留才資源才不會平均撒出去。</p>
+    </div>
+    <div class="hr-card"><div class="hr-chart" data-draw="reasons" data-source="reasons"></div></div>
+  </section>
+
+  <section class="hr-section" id="list">
+    <div>
+      <h2>風險名單</h2>
+      <p class="hr-sub"><span data-draw="listcount" data-source="filtered">—</span> 人符合條件，下表列出風險最高的 25 人。點一列可以在下方看這個人的解釋。</p>
+    </div>
+    <div class="hr-controls">
+      <label class="hr-field" for="hr-tier">風險等級
+        <select class="dash-select" id="hr-tier">
+          <option value="高風險">高風險</option>
+          <option value="中風險">中風險</option>
+          <option value="低風險">低風險</option>
+          <option value="">全部</option>
+        </select>
+      </label>
+      <label class="hr-field" for="hr-dept">部門
+        <select class="dash-select" id="hr-dept">
+          <option value="">全部部門</option>
+          <option value="Sales">Sales</option>
+          <option value="Research &amp; Development">Research &amp; Development</option>
+          <option value="Human Resources">Human Resources</option>
+        </select>
+      </label>
+    </div>
+    <div class="hr-card hr-tablewrap">
+      <table data-source="risk" data-row-key="EmployeeNumber" id="risk-table">
+        <thead><tr><th data-field="EmployeeNumber">員工編號</th><th data-field="Department">部門</th><th data-field="JobRole">職務</th><th class="hr-num" data-field="risk">風險</th><th data-field="tier">等級</th><th data-field="attrition">實際離職</th><th data-field="top3_actionable">前三個可介入原因（SHAP，log-odds）</th></tr></thead>
+        <tbody data-draw="list"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="hr-section" id="person">
+    <div>
+      <h2>個人解釋與 What-if 模擬</h2>
+      <p class="hr-sub">輸入員工編號，或點選風險最高的幾位。瀑布圖從全公司平均出發，紅色把風險推高，藍色把風險拉低。</p>
+    </div>
+    <div class="hr-controls">
+      <label class="hr-field" for="hr-emp">員工編號
+        <input type="number" id="hr-emp" min="1" max="2068" step="1">
+      </label>
+      <div class="hr-field">風險最高的 8 位
+        <div class="hr-picks" data-draw="picks" data-source="risk"></div>
+      </div>
+    </div>
+    <div class="hr-card" id="profile">
+      <div class="hr-profile" data-draw="profile" data-source="risk"></div>
+    </div>
+    <div class="hr-row">
+      <div class="hr-card" id="waterfall">
+        <h2>這個人為什麼是這個分數</h2>
+        <div class="hr-chart" data-draw="waterfall" data-source="risk"></div>
+        <p class="hr-sub">長條的數值是 SHAP（log-odds），圓點旁是換算後的機率。+0.69 約等於離職勝算變成 2 倍。</p>
+      </div>
+      <div class="hr-card" id="whatif">
+        <h2>如果改變這些條件</h2>
+        <p class="hr-sub">下拉選單預設是這個人目前的狀態。調整後，下方即時算出新的模型分數。這是模型的推估，不代表因果。</p>
+        <div class="hr-whatif">
+          <label class="hr-field" for="wf-OverTime">加班<select class="dash-select" id="wf-OverTime" data-wf="OverTime"><option value="Yes">有</option><option value="No">沒有</option></select></label>
+          <label class="hr-field" for="wf-BusinessTravel">出差頻率<select class="dash-select" id="wf-BusinessTravel" data-wf="BusinessTravel"><option value="Non-Travel">不出差</option><option value="Travel_Rarely">偶爾出差</option><option value="Travel_Frequently">經常出差</option></select></label>
+          <label class="hr-field" for="wf-HasStock">持有認股<select class="dash-select" id="wf-HasStock" data-wf="HasStock"><option value="Yes">有</option><option value="No">沒有</option></select></label>
+          <label class="hr-field" for="wf-EnvironmentSatisfaction">環境滿意度<select class="dash-select" id="wf-EnvironmentSatisfaction" data-wf="EnvironmentSatisfaction" data-num="1"><option value="1">1 低</option><option value="2">2</option><option value="3">3</option><option value="4">4 高</option></select></label>
+          <label class="hr-field" for="wf-JobSatisfaction">工作滿意度<select class="dash-select" id="wf-JobSatisfaction" data-wf="JobSatisfaction" data-num="1"><option value="1">1 低</option><option value="2">2</option><option value="3">3</option><option value="4">4 高</option></select></label>
+          <label class="hr-field" for="wf-JobInvolvement">工作投入度<select class="dash-select" id="wf-JobInvolvement" data-wf="JobInvolvement" data-num="1"><option value="1">1 低</option><option value="2">2</option><option value="3">3</option><option value="4">4 高</option></select></label>
+          <label class="hr-field" for="wf-WorkLifeBalance">工作生活平衡<select class="dash-select" id="wf-WorkLifeBalance" data-wf="WorkLifeBalance" data-num="1"><option value="1">1 差</option><option value="2">2</option><option value="3">3</option><option value="4">4 好</option></select></label>
+          <label class="hr-field" for="wf-YearsSinceLastPromotion">距上次升遷（年）<input type="number" id="wf-YearsSinceLastPromotion" data-wf="YearsSinceLastPromotion" data-num="1" min="0" max="15" step="1"></label>
+          <label class="hr-field" for="wf-MonthlyIncome">月薪<input type="number" id="wf-MonthlyIncome" data-wf="MonthlyIncome" data-num="1" min="1000" max="20000" step="100"></label>
+          <label class="hr-field" for="wf-DistanceFromHome">通勤距離<input type="number" id="wf-DistanceFromHome" data-wf="DistanceFromHome" data-num="1" min="1" max="29" step="1"></label>
+        </div>
+        <div class="hr-controls" style="margin-top: var(--cds-gap-md)"><button type="button" class="hr-btn" id="wf-reset">還原成目前狀態</button></div>
+        <div class="hr-result" style="margin-top: var(--cds-gap-md)" data-draw="whatif" data-source="model risk">—</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="hr-section" id="roi">
+    <div>
+      <h2>留才方案 ROI 試算</h2>
+      <p class="hr-sub">替換成本以年薪的百分比估算，年薪以介入對象中實際離職者的平均月薪 × 12 計算。「成功率」是介入後能留住原本會離職的人的比例。三個數字都是假設，請換成公司自己的數字。</p>
+    </div>
+    <div class="hr-controls">
+      <label class="hr-field" for="roi-target">介入對象
+        <select class="dash-select" id="roi-target">
+          <option value="high">只有高風險</option>
+          <option value="highmid">高風險 + 中風險</option>
+          <option value="all">全部員工</option>
+        </select>
+      </label>
+      <label class="hr-field" for="roi-repl">替換成本（年薪 %）<input type="number" id="roi-repl" value="50" min="0" max="300" step="5"></label>
+      <label class="hr-field" for="roi-cost">每人介入成本<input type="number" id="roi-cost" value="1000" min="0" step="100"></label>
+      <label class="hr-field" for="roi-success">成功率（%）<input type="number" id="roi-success" value="20" min="0" max="100" step="5"></label>
+    </div>
+    <div class="hr-card"><div class="hr-result" data-draw="roi" data-source="roi_base">—</div></div>
+  </section>
+
+  <details id="method">
+    <summary>方法、限制與公平性說明</summary>
+    <ul>
+      <li>風險分數是 5-fold 交叉驗證的 out-of-fold 預測，分級門檻：≥ 50% 為高風險，20–50% 為中風險。</li>
+      <li>個人解釋與 What-if 使用全量資料訓練的同一個模型，所以 What-if 的起點分數會和名單上的風險分數略有不同。</li>
+      <li>特徵處理：移除 9 個共線或冗餘的欄位（例如職級和月薪的相關係數為 0.95），移除性別、年齡、婚姻，認股等級改為「有／沒有」。</li>
+      <li>代理變數提醒：資料中所有單身者的認股等級都是 0，所以「沒有認股」仍然部分帶有婚姻資訊。實際導入時要依族群比較誤判率。</li>
+      <li>SHAP 說明模型怎麼判斷，不等於因果。減少加班等措施的效果，需要用試點驗證。</li>
+    </ul>
+  </details>
+</div>
+
+<script>
+// ---------- 計算（讀者可以在 Sources 看到公式） ----------
+dash.calc('kpi', {
+  inputs: ['hr', 'risk', 'metrics'],
+  title: '重點數字',
+  description: '員工數、離職率、加班與否的離職率、高風險名單的規模與涵蓋率、模型 AUC。',
+  fn: (hr, risk, metrics) => {
+    const yes = (r) => r.Attrition === 'Yes';
+    const ot = hr.filter((r) => r.OverTime === 'Yes'), noOt = hr.filter((r) => r.OverTime === 'No');
+    const high = risk.filter((r) => r.tier === '高風險');
+    const leavers = hr.filter(yes).length;
+    const highLeavers = high.filter((r) => r.attrition === 'Yes').length;
+    const used = metrics.find((m) => m.used === 'Yes');
+    return [{
+      n: hr.length, leavers, rate: leavers / hr.length,
+      ot_yes_rate: ot.filter(yes).length / ot.length, ot_no_rate: noOt.filter(yes).length / noOt.length,
+      high_n: high.length, high_leavers: highLeavers, high_rate: highLeavers / high.length,
+      capture: highLeavers / leavers, auc: used ? used.roc_auc : null,
+    }];
+  },
+});
+
+dash.calc('rates', {
+  inputs: ['hr'],
+  title: '各族群離職率',
+  description: '每個維度、每個族群的人數、離職人數與離職率。年資、年齡分組，月薪依四分位切分。',
+  fn: (hr) => {
+    const age = (r) => +(r.Age ?? r['﻿Age']);
+    const incomes = hr.map((r) => +r.MonthlyIncome).sort((a, b) => a - b);
+    const q = (p) => incomes[Math.floor(p * (incomes.length - 1))];
+    const q1 = q(0.25), q2 = q(0.5), q3 = q(0.75);
+    const band = (v, cuts, labels) => { for (let i = 0; i < cuts.length; i++) if (v <= cuts[i]) return labels[i]; return labels[labels.length - 1]; };
+    const dims = {
+      OverTime: (r) => r.OverTime, JobRole: (r) => r.JobRole, JobLevel: (r) => 'Level ' + r.JobLevel,
+      StockOptionLevel: (r) => '等級 ' + r.StockOptionLevel, BusinessTravel: (r) => r.BusinessTravel, Department: (r) => r.Department,
+      Tenure: (r) => band(+r.YearsAtCompany, [1, 3, 5, 10], ['0–1 年', '2–3 年', '4–5 年', '6–10 年', '10 年以上']),
+      AgeBand: (r) => band(age(r), [25, 30, 35, 45], ['18–25 歲', '26–30 歲', '31–35 歲', '36–45 歲', '46 歲以上']),
+      IncomeQ: (r) => band(+r.MonthlyIncome, [q1, q2, q3], ['Q1（最低）', 'Q2', 'Q3', 'Q4（最高）']),
+      EnvironmentSatisfaction: (r) => r.EnvironmentSatisfaction + ' 分', JobSatisfaction: (r) => r.JobSatisfaction + ' 分',
+      WorkLifeBalance: (r) => r.WorkLifeBalance + ' 分', JobInvolvement: (r) => r.JobInvolvement + ' 分', MaritalStatus: (r) => r.MaritalStatus,
+    };
+    const out = [];
+    for (const [dim, get] of Object.entries(dims)) {
+      const g = new Map();
+      for (const r of hr) { const k = get(r); const o = g.get(k) || { n: 0, leavers: 0 }; o.n++; if (r.Attrition === 'Yes') o.leavers++; g.set(k, o); }
+      for (const [level, o] of g) out.push({ dim, level, n: o.n, leavers: o.leavers, rate: o.leavers / o.n });
+    }
+    return out;
+  },
+});
+
+dash.calc('ot_level', {
+  inputs: ['hr'],
+  title: '加班 × 職級離職率',
+  description: '依是否加班與職級交叉分組的離職率。',
+  fn: (hr) => {
+    const out = [];
+    for (const ot of ['Yes', 'No']) for (const lv of ['1', '2', '3', '4', '5']) {
+      const g = hr.filter((r) => r.OverTime === ot && String(r.JobLevel) === lv);
+      out.push({ OverTime: ot, JobLevel: lv, n: g.length, rate: g.length ? g.filter((r) => r.Attrition === 'Yes').length / g.length : null });
+    }
+    return out;
+  },
+});
+
+dash.calc('reasons', {
+  inputs: ['risk'],
+  title: '高風險員工的第一個可介入原因',
+  description: '高風險員工中，SHAP 值最大的 HR 可介入原因的人數分佈。',
+  fn: (risk) => {
+    const high = risk.filter((r) => r.tier === '高風險');
+    const g = new Map();
+    for (const r of high) { const k = r.first_reason || '（無）'; g.set(k, (g.get(k) || 0) + 1); }
+    return [...g].map(([reason, n]) => ({ reason, n, share: n / high.length })).sort((a, b) => b.n - a.n);
+  },
+});
+
+dash.calc('filtered', {
+  inputs: ['risk'],
+  title: '符合名單條件的人數',
+  description: '依目前選的風險等級與部門篩選後的員工人數。',
+  fn: (risk) => {
+    const p = dash.params();
+    const tier = p.tier ?? '高風險', dept = p.dept ?? '';
+    return risk.filter((r) => (!tier || r.tier === tier) && (!dept || r.Department === dept)).length;
+  },
+});
+
+dash.calc('roi_base', {
+  inputs: ['risk'],
+  title: 'ROI 試算的基礎數字',
+  description: '各介入對象的人數、其中實際離職人數，以及這些離職者的平均月薪。',
+  fn: (risk) => {
+    const groups = { high: ['高風險'], highmid: ['高風險', '中風險'], all: ['高風險', '中風險', '低風險'] };
+    return Object.entries(groups).map(([group, tiers]) => {
+      const g = risk.filter((r) => tiers.includes(r.tier));
+      const lv = g.filter((r) => r.attrition === 'Yes');
+      return { group, n: g.length, leavers: lv.length, avg_income: lv.length ? lv.reduce((s, r) => s + r.v_MonthlyIncome, 0) / lv.length : 0 };
+    });
+  },
+});
+
+// ---------- 共用工具 ----------
+window.hr = window.hr || {};
+hr.P = () => Object.assign({ dim: 'OverTime', tier: '高風險', dept: '', emp: null }, dash.params());
+hr.fmt = { pct: d3.format('.1%'), pct0: d3.format('.0%'), int: d3.format(','), f3: d3.format('.3f'), money: d3.format(',.0f'), pp: d3.format('+.1f') };
+hr.logistic = (z) => 1 / (1 + Math.exp(-z));
+hr.tip = (el) => {
+  let t = el.querySelector(':scope > .hr-tip');
+  if (!t) { t = document.createElement('div'); t.className = 'hr-tip'; t.hidden = true; el.appendChild(t); }
+  return {
+    show(ev, lines) {
+      t.replaceChildren(...lines.map((s, i) => { const d = document.createElement('div'); d.textContent = s; if (i === 0) d.style.fontWeight = '600'; return d; }));
+      t.hidden = false;
+      const box = el.getBoundingClientRect();
+      let x = ev.clientX - box.left + 12, y = ev.clientY - box.top + 12;
+      if (x + t.offsetWidth > box.width) x = Math.max(0, ev.clientX - box.left - t.offsetWidth - 12);
+      t.style.left = x + 'px'; t.style.top = y + 'px';
+    },
+    hide() { t.hidden = true; },
+  };
+};
+hr.empRow = () => {
+  const r = dash.data('risk');
+  if (r.status !== 'ok' || !r.data.length) return null;
+  const id = hr.P().emp;
+  return r.data.find((x) => x.EmployeeNumber === Number(id)) || d3.greatest(r.data, (x) => x.risk);
+};
+hr.labels = () => {
+  const m = dash.data('model');
+  const map = new Map();
+  if (m.status === 'ok') for (const r of m.data) if (r.kind !== 'intercept') map.set(r.feature, r.label);
+  return map;
+};
+hr.dimLabels = { OverTime: '加班', JobRole: '職務', JobLevel: '職級', StockOptionLevel: '認股等級', BusinessTravel: '出差頻率', Department: '部門', Tenure: '本公司年資', AgeBand: '年齡', IncomeQ: '月薪四分位', EnvironmentSatisfaction: '環境滿意度', JobSatisfaction: '工作滿意度', WorkLifeBalance: '工作生活平衡', JobInvolvement: '工作投入度', MaritalStatus: '婚姻狀態' };
+hr.dimOrder = { Tenure: ['0–1 年', '2–3 年', '4–5 年', '6–10 年', '10 年以上'], AgeBand: ['18–25 歲', '26–30 歲', '31–35 歲', '36–45 歲', '46 歲以上'], IncomeQ: ['Q1（最低）', 'Q2', 'Q3', 'Q4（最高）'] };
+</script>
+
+<script>
+// ---------- 控制項（只監聽、設定 value） ----------
+(() => {
+  const p = hr.P();
+  document.querySelectorAll('#hr-dim').forEach((s) => { s.value = p.dim; s.addEventListener('change', () => dash.setParams({ dim: s.value })); });
+  document.querySelectorAll('#hr-tier').forEach((s) => { s.value = p.tier; s.addEventListener('change', () => dash.setParams({ tier: s.value })); });
+  document.querySelectorAll('#hr-dept').forEach((s) => { s.value = p.dept; s.addEventListener('change', () => dash.setParams({ dept: s.value })); });
+  document.querySelectorAll('#hr-emp').forEach((inp) => {
+    inp.addEventListener('change', () => { const v = Number(inp.value); if (Number.isInteger(v) && v > 0) dash.setParams({ emp: v }); });
+  });
+  document.querySelectorAll('[data-wf]').forEach((el) => el.addEventListener('input', () => dash.draw('whatif')));
+  document.querySelectorAll('#wf-reset').forEach((b) => b.addEventListener('click', () => { hr.lastEmp = null; hr.syncInputs(); dash.draw('whatif'); }));
+  document.querySelectorAll('#roi-target, #roi-repl, #roi-cost, #roi-success').forEach((el) => el.addEventListener('input', () => dash.draw('roi')));
+
+  hr.syncInputs = () => {
+    const row = hr.empRow();
+    if (!row) return;
+    document.querySelectorAll('#hr-emp').forEach((inp) => { if (document.activeElement !== inp) inp.value = row.EmployeeNumber; });
+    if (hr.lastEmp === row.EmployeeNumber) return;
+    hr.lastEmp = row.EmployeeNumber;
+    document.querySelectorAll('[data-wf]').forEach((el) => { const v = row['v_' + el.dataset.wf]; if (v != null) el.value = String(v); });
+  };
+  dash.onData(() => hr.syncInputs());
+})();
+</script>
+
+<script>
+// ---------- 繪圖 ----------
+dash.draw('kpi', (el) => {
+  const k = dash.data('kpi');
+  if (k.status !== 'ok' || !k.data || !k.data.length) { el.textContent = '—'; return; }
+  const v = k.data[0][el.dataset.field];
+  el.textContent = v == null ? '—' : hr.fmt[el.dataset.fmt](v);
+});
+
+dash.draw('rates', (el) => {
+  const d = dash.data('rates'), k = dash.data('kpi');
+  if (d.status !== 'ok' || !d.data) { el.replaceChildren(); el.textContent = d.status === 'error' ? '無法載入' : '—'; return; }
+  const dim = hr.P().dim;
+  let rows = d.data.filter((r) => r.dim === dim);
+  const order = hr.dimOrder[dim];
+  rows = order ? rows.sort((a, b) => order.indexOf(a.level) - order.indexOf(b.level)) : rows.sort((a, b) => b.rate - a.rate);
+  const avg = k.status === 'ok' && k.data ? k.data[0].rate : null;
+  el.replaceChildren();
+  const W = el.clientWidth || 600, rowH = 30, H = rows.length * rowH + 30;
+  const svg = d3.select(el).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`).attr('role', 'img')
+    .attr('aria-label', `依${hr.dimLabels[dim]}分組的離職率`);
+  const probe = svg.append('g');
+  const maxLab = d3.max(rows, (r) => { const t = probe.append('text').text(r.level); const w = t.node().getComputedTextLength(); return w; }) || 80;
+  probe.remove();
+  const left = Math.min(maxLab + 12, W * 0.45), right = 120;
+  const x = d3.scaleLinear().domain([0, Math.max(d3.max(rows, (r) => r.rate) || 0.1, avg || 0) * 1.05]).range([left, W - right]);
+  const tip = hr.tip(el);
+  const g = svg.append('g');
+  rows.forEach((r, i) => {
+    const y = i * rowH + 4;
+    g.append('text').attr('x', left - 8).attr('y', y + rowH / 2).attr('text-anchor', 'end').attr('dominant-baseline', 'middle').attr('class', 'hr-strong').text(r.level);
+    g.append('rect').attr('x', left).attr('y', y + 5).attr('height', rowH - 10).attr('width', Math.max(1, x(r.rate) - left)).attr('rx', 3)
+      .style('fill', avg != null && r.rate > avg ? 'var(--color-bad)' : dash.colors[0])
+      .on('pointermove', (ev) => tip.show(ev, [r.level, `離職率 ${hr.fmt.pct(r.rate)}`, `${r.leavers} / ${r.n} 人`])).on('pointerleave', () => tip.hide());
+    g.append('text').attr('x', x(r.rate) + 6).attr('y', y + rowH / 2).attr('dominant-baseline', 'middle').attr('class', 'hr-strong')
+      .text(`${hr.fmt.pct(r.rate)}`).append('tspan').style('fill', 'var(--cds-text-secondary)').text(`  n=${r.n}`);
+  });
+  if (avg != null) {
+    svg.append('line').attr('x1', x(avg)).attr('x2', x(avg)).attr('y1', 0).attr('y2', rows.length * rowH + 6).style('stroke', 'var(--cds-chart-reference)').attr('stroke-dasharray', '4 4');
+    svg.append('text').attr('x', x(avg)).attr('y', H - 6).attr('text-anchor', 'middle').text(`平均 ${hr.fmt.pct(avg)}`);
+  }
+});
+
+dash.draw('otlevel', (el) => {
+  const d = dash.data('ot_level');
+  if (d.status !== 'ok' || !d.data) { el.replaceChildren(); el.textContent = '—'; return; }
+  el.replaceChildren();
+  const W = el.clientWidth || 300, left = 64, cw = (W - left - 4) / 5, ch = 40, H = 30 + ch * 2 + 4;
+  const svg = d3.select(el).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`).attr('role', 'img').attr('aria-label', '加班與職級交叉的離職率熱力圖');
+  const color = d3.scaleLinear().domain([0, 0.55]).range([0.05, 0.9]).clamp(true);
+  const tip = hr.tip(el);
+  ['1', '2', '3', '4', '5'].forEach((lv, j) => svg.append('text').attr('x', left + j * cw + cw / 2).attr('y', 16).attr('text-anchor', 'middle').text('Level ' + lv));
+  [['Yes', '有加班'], ['No', '沒加班']].forEach(([ot, lab], i) => {
+    svg.append('text').attr('x', 0).attr('y', 30 + i * ch + ch / 2).attr('dominant-baseline', 'middle').attr('class', 'hr-strong').text(lab);
+    d.data.filter((r) => r.OverTime === ot).forEach((r) => {
+      const j = Number(r.JobLevel) - 1, x0 = left + j * cw, y0 = 26 + i * ch;
+      svg.append('rect').attr('x', x0 + 2).attr('y', y0 + 2).attr('width', cw - 4).attr('height', ch - 4).attr('rx', 4)
+        .style('fill', 'var(--color-bad)').style('fill-opacity', r.rate == null ? 0.03 : color(r.rate))
+        .on('pointermove', (ev) => tip.show(ev, [`${lab}・Level ${r.JobLevel}`, `離職率 ${r.rate == null ? '—' : hr.fmt.pct(r.rate)}`, `${r.n} 人`])).on('pointerleave', () => tip.hide());
+      svg.append('text').attr('x', x0 + cw / 2).attr('y', y0 + ch / 2 + 1).attr('text-anchor', 'middle').attr('dominant-baseline', 'middle')
+        .attr('class', 'hr-strong').style('pointer-events', 'none').text(r.rate == null ? '—' : hr.fmt.pct0(r.rate));
+    });
+  });
+});
+
+dash.draw('metrics', (tb) => {
+  const d = dash.data('metrics');
+  tb.replaceChildren();
+  if (d.status !== 'ok') return;
+  for (const m of d.data) {
+    const tr = document.createElement('tr');
+    const cells = [m.model, hr.fmt.f3(m.roc_auc), hr.fmt.f3(m.pr_auc), hr.fmt.f3(m.recall), hr.fmt.f3(m.precision), hr.fmt.pct0(m.top20_capture)];
+    cells.forEach((c, i) => { const td = document.createElement('td'); td.textContent = c; if (i) td.className = 'hr-num'; if (m.used === 'Yes') td.style.fontWeight = '600'; tr.appendChild(td); });
+    tb.appendChild(tr);
+  }
+});
+
+dash.draw('roc', (el) => {
+  const d = dash.data('roc');
+  if (d.status !== 'ok') { el.replaceChildren(); el.textContent = '—'; return; }
+  el.replaceChildren();
+  const W = el.clientWidth || 300, H = Math.min(280, Math.max(200, W * 0.7)), m = { l: 40, r: 12, t: 8, b: 34 };
+  const svg = d3.select(el).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`).attr('role', 'img').attr('aria-label', 'ROC 曲線');
+  const x = d3.scaleLinear().domain([0, 1]).range([m.l, W - m.r]), y = d3.scaleLinear().domain([0, 1]).range([H - m.b, m.t]);
+  svg.append('g').attr('transform', `translate(0,${H - m.b})`).call(d3.axisBottom(x).ticks(5).tickFormat(d3.format('.0%'))).call((g) => g.selectAll('line,path').style('stroke', 'var(--cds-chart-axis)'));
+  svg.append('g').attr('transform', `translate(${m.l},0)`).call(d3.axisLeft(y).ticks(5).tickFormat(d3.format('.0%'))).call((g) => g.selectAll('line,path').style('stroke', 'var(--cds-chart-axis)'));
+  svg.append('line').attr('x1', x(0)).attr('y1', y(0)).attr('x2', x(1)).attr('y2', y(1)).style('stroke', 'var(--cds-chart-reference)').attr('stroke-dasharray', '4 4');
+  svg.append('path').datum(d.data).attr('d', d3.line().x((p) => x(p.fpr)).y((p) => y(p.tpr))).style('fill', 'none').style('stroke', dash.colors[0]).style('stroke-width', 2);
+  svg.append('text').attr('x', (m.l + W - m.r) / 2).attr('y', H - 2).attr('text-anchor', 'middle').text('誤報率（FPR）');
+  svg.append('text').attr('x', m.l + 6).attr('y', m.t + 12).text('抓到的離職者比例（TPR）');
+  const tip = hr.tip(el);
+  svg.append('rect').attr('x', m.l).attr('y', m.t).attr('width', W - m.l - m.r).attr('height', H - m.t - m.b).style('fill', 'transparent')
+    .on('pointermove', (ev) => { const [px] = d3.pointer(ev); const f = x.invert(px); const p = d.data[d3.bisector((q) => q.fpr).center(d.data, f)]; tip.show(ev, [`FPR ${hr.fmt.pct(p.fpr)}`, `TPR ${hr.fmt.pct(p.tpr)}`]); })
+    .on('pointerleave', () => tip.hide());
+});
+
+dash.draw('reasons', (el) => {
+  const d = dash.data('reasons');
+  if (d.status !== 'ok' || !d.data) { el.replaceChildren(); el.textContent = '—'; return; }
+  el.replaceChildren();
+  const rows = d.data, W = el.clientWidth || 600, rowH = 28, H = rows.length * rowH + 8;
+  const svg = d3.select(el).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`).attr('role', 'img').attr('aria-label', '高風險員工第一個可介入原因的人數');
+  const left = 120, x = d3.scaleLinear().domain([0, d3.max(rows, (r) => r.n)]).range([left, W - 110]);
+  const tip = hr.tip(el);
+  rows.forEach((r, i) => {
+    const y = i * rowH + 4;
+    svg.append('text').attr('x', left - 8).attr('y', y + rowH / 2).attr('text-anchor', 'end').attr('dominant-baseline', 'middle').attr('class', 'hr-strong').text(r.reason);
+    svg.append('rect').attr('x', left).attr('y', y + 5).attr('height', rowH - 10).attr('width', Math.max(1, x(r.n) - left)).attr('rx', 3).style('fill', i === 0 ? 'var(--color-bad)' : dash.colors[0])
+      .on('pointermove', (ev) => tip.show(ev, [r.reason, `${r.n} 人`, `佔高風險 ${hr.fmt.pct(r.share)}`])).on('pointerleave', () => tip.hide());
+    svg.append('text').attr('x', x(r.n) + 6).attr('y', y + rowH / 2).attr('dominant-baseline', 'middle').attr('class', 'hr-strong').text(`${r.n} 人（${hr.fmt.pct0(r.share)}）`);
+  });
+});
+
+dash.draw('listcount', (el) => {
+  const d = dash.data('filtered');
+  el.textContent = d.status === 'ok' && d.data != null ? hr.fmt.int(d.data) : '—';
+});
+
+dash.draw('list', (tb) => {
+  const d = dash.data('risk');
+  tb.replaceChildren();
+  if (d.status !== 'ok') return;
+  const p = hr.P(), sel = hr.empRow();
+  const rows = d.data.filter((r) => (!p.tier || r.tier === p.tier) && (!p.dept || r.Department === p.dept)).sort((a, b) => b.risk - a.risk).slice(0, 25);
+  for (const r of rows) {
+    const tr = document.createElement('tr');
+    tr.className = 'hr-click' + (sel && sel.EmployeeNumber === r.EmployeeNumber ? ' hr-sel' : '');
+    tr.tabIndex = 0;
+    const add = (txt, cls) => { const td = document.createElement('td'); td.textContent = txt; if (cls) td.className = cls; tr.appendChild(td); return td; };
+    add(String(r.EmployeeNumber)); add(r.Department); add(r.JobRole); add(hr.fmt.pct(r.risk), 'hr-num');
+    const tdT = document.createElement('td'); const chip = document.createElement('span'); chip.className = 'hr-chip hr-chip-' + r.tier; chip.textContent = r.tier; tdT.appendChild(chip); tr.appendChild(tdT);
+    add(r.attrition === 'Yes' ? '是' : '否'); add(r.top3_actionable);
+    const go = () => { dash.setParams({ emp: r.EmployeeNumber }); document.getElementById('person')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+    tr.addEventListener('click', go);
+    tr.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+    tb.appendChild(tr);
+  }
+});
+
+dash.draw('picks', (el) => {
+  const d = dash.data('risk');
+  el.replaceChildren();
+  if (d.status !== 'ok') { el.textContent = '—'; return; }
+  const sel = hr.empRow();
+  for (const r of d.data.slice().sort((a, b) => b.risk - a.risk).slice(0, 8)) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'hr-pick'; b.textContent = '#' + r.EmployeeNumber;
+    b.setAttribute('aria-pressed', String(!!sel && sel.EmployeeNumber === r.EmployeeNumber));
+    b.addEventListener('click', () => dash.setParams({ emp: r.EmployeeNumber }));
+    el.appendChild(b);
+  }
+});
+
+dash.draw('profile', (el) => {
+  const row = hr.empRow();
+  el.replaceChildren();
+  if (!row) { el.textContent = dash.data('risk').status === 'ok' ? '找不到這個員工編號（範圍 1–2068，部分編號不存在）。' : '—'; return; }
+  const where = 'EmployeeNumber=' + row.EmployeeNumber;
+  const kv = (label, field, text) => {
+    const box = document.createElement('div');
+    const l = document.createElement('div'); l.className = 'hr-kv-label'; l.textContent = label;
+    const v = document.createElement('div'); v.className = 'hr-kv-value'; v.dataset.source = 'risk'; v.dataset.field = field; v.dataset.where = where; v.textContent = text;
+    box.append(l, v); el.appendChild(box); return v;
+  };
+  kv('員工編號', 'EmployeeNumber', '#' + row.EmployeeNumber);
+  kv('部門', 'Department', row.Department);
+  kv('職務', 'JobRole', row.JobRole);
+  kv('風險分數', 'risk', hr.fmt.pct(row.risk));
+  const t = kv('風險等級', 'tier', ''); const chip = document.createElement('span'); chip.className = 'hr-chip hr-chip-' + row.tier; chip.textContent = row.tier; t.appendChild(chip);
+  kv('實際是否離職', 'attrition', row.attrition === 'Yes' ? '是' : '否');
+  const box = document.createElement('div'); box.style.gridColumn = '1 / -1';
+  const l = document.createElement('div'); l.className = 'hr-kv-label'; l.textContent = '目前的保護因子（介入時不要動到）';
+  const v = document.createElement('div'); v.className = 'hr-kv-value'; v.dataset.source = 'risk'; v.dataset.field = 'top2_protective'; v.dataset.where = where; v.textContent = row.top2_protective || '—';
+  box.append(l, v); el.appendChild(box);
+});
+
+dash.draw('waterfall', (el) => {
+  const row = hr.empRow(), labels = hr.labels();
+  if (!row || !labels.size) { el.replaceChildren(); el.textContent = '—'; return; }
+  el.replaceChildren();
+  const items = [...labels.keys()].map((f) => ({ f, label: labels.get(f), v: row['v_' + f], s: row['s_' + f] })).filter((it) => it.s != null)
+    .sort((a, b) => Math.abs(b.s) - Math.abs(a.s));
+  const total = Math.log(row.model_score / (1 - row.model_score));
+  const base = total - d3.sum(items, (it) => it.s);
+  const top = items.slice(0, 8), rest = items.slice(8);
+  const zh = { Yes: '有', No: '沒有', Travel_Frequently: '經常出差', Travel_Rarely: '偶爾出差', 'Non-Travel': '不出差' };
+  const show = (v) => (typeof v === 'number' && !Number.isInteger(v) ? v.toFixed(2) : (zh[v] ?? v));
+  const steps = [...top.map((it) => ({ label: `${it.label} = ${show(it.v)}`, s: it.s }))];
+  if (rest.length) steps.push({ label: `其他 ${rest.length} 項`, s: d3.sum(rest, (it) => it.s), other: true });
+  let cum = base; for (const st of steps) { st.from = cum; cum += st.s; st.to = cum; }
+  const W = el.clientWidth || 500, rowH = 28, H = (steps.length + 2) * rowH + 10;
+  const svg = d3.select(el).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`).attr('role', 'img').attr('aria-label', `員工 ${row.EmployeeNumber} 的風險分數拆解`);
+  const probe = svg.append('g');
+  const maxLab = d3.max(steps, (st) => probe.append('text').text(st.label).node().getComputedTextLength()) || 100; probe.remove();
+  const left = Math.min(maxLab + 12, W * 0.45);
+  const fit = (node) => {
+    const room = left - 12; let s = node.textContent;
+    while (node.getComputedTextLength() > room && s.length > 2) { s = s.slice(0, -1); node.textContent = s + '…'; }
+  };
+  const ext = d3.extent([base, total, ...steps.flatMap((s) => [s.from, s.to])]);
+  const x = d3.scaleLinear().domain([ext[0] - 0.3, ext[1] + 0.3]).range([left, W - 56]);
+  const tip = hr.tip(el);
+  const lineRow = (i, value, text, strong) => {
+    const y = i * rowH + 4;
+    svg.append('text').attr('x', left - 8).attr('y', y + rowH / 2).attr('text-anchor', 'end').attr('dominant-baseline', 'middle').attr('class', strong ? 'hr-strong' : null).style('font-weight', strong ? 600 : null).text(text);
+    svg.append('circle').attr('cx', x(value)).attr('cy', y + rowH / 2).attr('r', 4).style('fill', 'var(--color-fg)');
+    svg.append('text').attr('x', x(value) + 8).attr('y', y + rowH / 2).attr('dominant-baseline', 'middle').attr('class', 'hr-strong').text(hr.fmt.pct(hr.logistic(value)));
+  };
+  lineRow(0, base, '全公司平均起點', false);
+  steps.forEach((st, i) => {
+    const y = (i + 1) * rowH + 4, x0 = x(Math.min(st.from, st.to)), x1 = x(Math.max(st.from, st.to));
+    const lab = svg.append('text').attr('x', left - 8).attr('y', y + rowH / 2).attr('text-anchor', 'end').attr('dominant-baseline', 'middle').attr('class', st.other ? null : 'hr-strong').text(st.label);
+    fit(lab.node()); lab.append('title').text(st.label);
+    svg.append('rect').attr('x', x0).attr('y', y + 5).attr('width', Math.max(1.5, x1 - x0)).attr('height', rowH - 10).attr('rx', 3)
+      .style('fill', st.s > 0 ? 'var(--color-bad)' : dash.colors[0]).style('fill-opacity', st.other ? 0.45 : 1)
+      .on('pointermove', (ev) => tip.show(ev, [st.label, `SHAP ${st.s > 0 ? '+' : ''}${st.s.toFixed(2)}（log-odds）`, st.s > 0 ? '推高離職風險' : '降低離職風險'])).on('pointerleave', () => tip.hide());
+    const lx = st.s > 0 ? x1 + 4 : x0 - 4;
+    svg.append('text').attr('x', lx).attr('y', y + rowH / 2).attr('text-anchor', st.s > 0 ? 'start' : 'end').attr('dominant-baseline', 'middle').text(`${st.s > 0 ? '+' : ''}${st.s.toFixed(2)}`);
+  });
+  lineRow(steps.length + 1, total, '這個人的模型分數', true);
+});
+
+dash.draw('whatif', (el) => {
+  const row = hr.empRow(), m = dash.data('model');
+  if (!row || m.status !== 'ok') { el.replaceChildren(); el.textContent = '—'; return; }
+  const vals = {};
+  for (const k of Object.keys(row)) if (k.startsWith('v_')) vals[k.slice(2)] = row[k];
+  document.querySelectorAll('[data-wf]').forEach((inp) => {
+    if (inp.value === '') return;
+    vals[inp.dataset.wf] = inp.dataset.num ? Number(inp.value) : inp.value;
+  });
+  let z = 0;
+  for (const t of m.data) {
+    if (t.kind === 'intercept') z += t.coef;
+    else if (t.kind === 'num') z += t.coef * ((Number(vals[t.feature]) - t.mean) / t.scale);
+    else if (String(vals[t.feature]) === t.level) z += t.coef;
+  }
+  const after = hr.logistic(z), before = row.model_score, diff = (after - before) * 100;
+  const tierOf = (p) => (p >= 0.5 ? '高風險' : p >= 0.2 ? '中風險' : '低風險');
+  el.replaceChildren();
+  const block = (label, text, cls) => {
+    const b = document.createElement('div');
+    const l = document.createElement('div'); l.className = 'hr-kv-label'; l.textContent = label;
+    const v = document.createElement('div'); v.className = 'hr-big' + (cls ? ' ' + cls : ''); v.textContent = text;
+    b.append(l, v); el.appendChild(b); return b;
+  };
+  block('目前模型分數', hr.fmt.pct(before));
+  block('調整後', hr.fmt.pct(after));
+  block('變化（百分點）', Math.abs(diff) < 0.05 ? '0.0' : hr.fmt.pp(diff), diff < -0.05 ? 'hr-good' : diff > 0.05 ? 'hr-bad' : '');
+  const b = document.createElement('div');
+  const l = document.createElement('div'); l.className = 'hr-kv-label'; l.textContent = '等級';
+  const v = document.createElement('div'); v.style.marginTop = '6px';
+  [tierOf(before), '→', tierOf(after)].forEach((t) => { const s = document.createElement('span'); if (t === '→') { s.textContent = ' → '; } else { s.className = 'hr-chip hr-chip-' + t; s.textContent = t; } v.appendChild(s); });
+  b.append(l, v); el.appendChild(b);
+});
+
+dash.draw('roi', (el) => {
+  const d = dash.data('roi_base');
+  if (d.status !== 'ok' || !d.data) { el.replaceChildren(); el.textContent = '—'; return; }
+  const val = (id, def) => { const e = document.getElementById(id); const n = e ? Number(e.value) : NaN; return Number.isFinite(n) ? n : def; };
+  const tgtEl = document.getElementById('roi-target'); const group = tgtEl ? tgtEl.value : 'high';
+  const g = d.data.find((r) => r.group === group) || d.data[0];
+  const repl = val('roi-repl', 50) / 100, cost = val('roi-cost', 1000), succ = val('roi-success', 20) / 100;
+  const perLeaver = g.avg_income * 12 * repl;
+  const saved = g.leavers * succ * perLeaver, spend = g.n * cost, net = saved - spend, roi = spend ? net / spend : null;
+  el.replaceChildren();
+  const where = 'group=' + g.group;
+  const block = (label, text, cls, mark) => {
+    const b = document.createElement('div');
+    const l = document.createElement('div'); l.className = 'hr-kv-label'; l.textContent = label;
+    const v = document.createElement('div'); v.className = 'hr-big' + (cls ? ' ' + cls : ''); v.textContent = text;
+    if (mark) { v.dataset.source = 'roi_base'; v.dataset.field = mark; v.dataset.where = where; }
+    b.append(l, v); el.appendChild(b);
+  };
+  block('介入人數', hr.fmt.int(g.n), '', 'n');
+  block('其中實際離職者', hr.fmt.int(g.leavers), '', 'leavers');
+  block('離職者平均月薪', hr.fmt.money(g.avg_income), '', 'avg_income');
+  block('介入總成本', hr.fmt.money(spend));
+  block('省下的替換成本', hr.fmt.money(saved));
+  block('淨效益', hr.fmt.money(net), net >= 0 ? 'hr-good' : 'hr-bad');
+  block('ROI', roi == null ? '—' : hr.fmt.pct0(roi), roi != null && roi >= 0 ? 'hr-good' : 'hr-bad');
+});
+</script>
+
+<p class="site-foot">資料：Kaggle IBM HR Analytics Employee Attrition &amp; Performance（虛構資料）。模型與圖表由本專案的 Python 程式產生（scripts/03_shap.py），重跑後這頁會自動讀到新資料。</p>
+</main>
+<script>dashBoot();</script>
+</body>
+</html>

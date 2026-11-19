@@ -1,0 +1,7 @@
+title: 員工離職預測專案
+description: IBM HR Analytics 員工離職預測：EDA、Logistic 模型、SHAP 解釋與互動儀表板
+lang: zh-TW
+exclude:
+  - requirements.txt
+  - "*.zip"
+  - .venv
